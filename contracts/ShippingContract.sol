@@ -39,6 +39,7 @@ contract ShippingContract is ChainlinkClient, Ownable {
   mapping(bytes32 => bytes32) private receipts;
 
   event OrderCreated(
+    bytes32 indexed orderId,
     address indexed buyer,
     address indexed seller,
     uint256 amount,
@@ -46,12 +47,26 @@ contract ShippingContract is ChainlinkClient, Ownable {
   );
 
   event OrderPaid(
+    bytes32 indexed orderId,
     address indexed buyer,
     address indexed seller,
     uint256 amount
   );
 
   event OrderCancelled(
+    bytes32 indexed orderId,
+    address indexed buyer,
+    address indexed seller
+  );
+
+  event OrderCompleted(
+    bytes32 indexed orderId,
+    address indexed buyer,
+    address indexed seller
+  );
+
+  event OrderFailed(
+    bytes32 indexed orderId,
     address indexed buyer,
     address indexed seller
   );
@@ -93,7 +108,7 @@ contract ShippingContract is ChainlinkClient, Ownable {
     order.seller = msg.sender;
     order.amount = _amount;
     order.deadline = now + 30 days;
-    emit OrderCreated(order.buyer, order.seller, order.amount, order.deadline);
+    emit OrderCreated(orderId, order.buyer, order.seller, order.amount, order.deadline);
     orders[keccak256(abi.encodePacked(_carrier, _trackingId))] = order;
   }
 
@@ -109,7 +124,7 @@ contract ShippingContract is ChainlinkClient, Ownable {
     require(now <= now - order.deadline, "Order reached deadline");
     require(order.balance == 0, "Order has been paid for");
     require(paymentSupplied(msg.value, orderId, order.amount, order.buyer), "Not enough payment");
-    emit OrderPaid(order.buyer, order.seller, order.amount);
+    emit OrderPaid(orderId, order.buyer, order.seller, order.amount);
   }
 
   function paymentSupplied(uint256 _paidWei, bytes32 _orderId, uint256 _amountUsd, address _buyer) private returns (bool) {
@@ -132,7 +147,7 @@ contract ShippingContract is ChainlinkClient, Ownable {
     require(now >= now - order.deadline, "Order reached deadline");
     delete orders[orderId];
     address(order.buyer).transfer(order.balance);
-    emit OrderCancelled(order.buyer, order.seller);
+    emit OrderCancelled(orderId, order.buyer, order.seller);
   }
 
   function checkShippingStatus(string _carrier, string _trackingId) public {
@@ -163,12 +178,14 @@ contract ShippingContract is ChainlinkClient, Ownable {
     if (_status == DELIVERED) {
       delete orders[receipts[_requestId]];
       address(order.seller).transfer(order.balance);
+      emit OrderCompleted(orderId, order.buyer, order.seller);
     }
 
     // Refund buyer
     if (_status == RETURN_TO_SENDER) {
       delete orders[receipts[_requestId]];
       address(order.buyer).transfer(order.balance);
+      emit OrderFailed(orderId, order.buyer, order.seller);
     }
 
     delete receipts[_requestId];
