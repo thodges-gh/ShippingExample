@@ -14,6 +14,13 @@ contract ShippingContract is ChainlinkClient, Ownable {
   using SafeMath for uint256;
 
   uint256 public constant MIN_AMOUNT = 1000000; // one penny
+  bytes32 public constant PRE_TRANSIT = bytes32("pre_transit");
+  bytes32 public constant IN_TRANSIT = bytes32("in_transit");
+  bytes32 public constant OUT_FOR_DELIVERY = bytes32("out_for_delivery");
+  bytes32 public constant DELIVERED = bytes32("delivered");
+  bytes32 public constant RETURN_TO_SENDER = bytes32("return_to_sender");
+  bytes32 public constant FAILURE = bytes32("failure");
+  bytes32 public constant UNKNOWN = bytes32("unknown");
 
   bytes32 public jobId;
   uint256 public payment;
@@ -42,6 +49,11 @@ contract ShippingContract is ChainlinkClient, Ownable {
     address indexed buyer,
     address indexed seller,
     uint256 amount
+  );
+
+  event OrderCancelled(
+    address indexed buyer,
+    address indexed seller
   );
 
   /**
@@ -73,6 +85,8 @@ contract ShippingContract is ChainlinkClient, Ownable {
   }
 
   function createOrder(string _carrier, string _trackingId, address _buyer, uint256 _amount) public {
+    bytes32 orderId = keccak256(abi.encodePacked(_carrier, _trackingId));
+    require(orders[orderId].amount == 0, "Order already exists");
     require(_amount >= MIN_AMOUNT, "Invalid payment amount");
     Order memory order;
     order.buyer = _buyer;
@@ -113,16 +127,19 @@ contract ShippingContract is ChainlinkClient, Ownable {
   function cancelOrder(string _carrier, string _trackingId) public {
     bytes32 orderId = keccak256(abi.encodePacked(_carrier, _trackingId));
     Order memory order = orders[orderId];
-    require(order.seller == msg.sender, "Must be called by buyer");
+    require(order.seller == msg.sender || order.buyer == msg.sender,
+      "Must be called by buyer or seller");
     require(now >= now - order.deadline, "Order reached deadline");
+    delete orders[orderId];
     address(order.buyer).transfer(order.balance);
+    emit OrderCancelled(order.buyer, order.seller);
   }
 
   function checkShippingStatus(string _carrier, string _trackingId) public {
     bytes32 orderId = keccak256(abi.encodePacked(_carrier, _trackingId));
     Order memory order = orders[orderId];
     require(order.balance > 0, "Order has not been paid for");
-    Chainlink.Request memory req = buildChainlinkRequest(jobId, this, this.fulfill.selector);
+    Chainlink.Request memory req = buildChainlinkRequest(jobId, this, this.finalizeOrder.selector);
     req.add("car", _carrier);
     req.add("code", _trackingId);
     receipts[sendChainlinkRequest(req, payment)] = orderId;
@@ -135,11 +152,25 @@ contract ShippingContract is ChainlinkClient, Ownable {
    * @param _requestId The ID that was generated for the request
    * @param _status The answer provided by the oracle
    */
-  function fulfill(bytes32 _requestId, bytes32 _status)
+  function finalizeOrder(bytes32 _requestId, bytes32 _status)
     public
     recordChainlinkFulfillment(_requestId)
   {
-    Order memory order = orders[receipts[_requestId]];
+    bytes32 orderId = receipts[_requestId];
+    Order memory order = orders[orderId];
+
+    // Pay to seller
+    if (_status == DELIVERED) {
+      delete orders[receipts[_requestId]];
+      address(order.seller).transfer(order.balance);
+    }
+
+    // Refund buyer
+    if (_status == RETURN_TO_SENDER) {
+      delete orders[receipts[_requestId]];
+      address(order.buyer).transfer(order.balance);
+    }
+
     delete receipts[_requestId];
   }
 

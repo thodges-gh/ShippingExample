@@ -5,223 +5,161 @@ const h = require('chainlink-test-helpers')
 contract('ShippingContract', accounts => {
   const LinkToken = artifacts.require('LinkToken.sol')
   const Oracle = artifacts.require('Oracle.sol')
+  const Reference = artifacts.require('MockAggregator.sol')
   const ShippingContract = artifacts.require('ShippingContract.sol')
 
   const defaultAccount = accounts[0]
   const oracleNode = accounts[1]
   const stranger = accounts[2]
-  const consumer = accounts[3]
+  const maintainer = accounts[3]
+  const buyer = accounts[4]
+  const seller = accounts[5]
 
-  // These parameters are used to validate the data was recieved
-  // on the deployed oracle contract. The Job ID only represents
-  // the type of data, but will not work on a public testnet.
-  // For the latest JobIDs, visit our docs here:
-  // https://docs.chain.link/v1.1/docs/addresses-and-job-ids
   const jobId = web3.utils.toHex('4c7b7ffb66b344fbaa64995af81e355a')
-  const url =
-    'https://min-api.cryptocompare.com/data/price?fsym=ETH&tsyms=USD,EUR,JPY'
-  const path = 'USD'
-  const times = 100
 
   // Represents 1 LINK for testnet requests
   const payment = web3.utils.toWei('1')
 
-  let link, oc, cc
+  let link, oc, cc, ref
 
   beforeEach(async () => {
     link = await LinkToken.new()
+    ref = await Reference.new()
     oc = await Oracle.new(link.address, { from: defaultAccount })
-    cc = await ShippingContract.new(link.address, { from: consumer })
+    cc = await ShippingContract.new(
+      link.address,
+      oc.address,
+      ref.address,
+      jobId,
+      payment,
+      { from: maintainer })
     await oc.setFulfillmentPermission(oracleNode, true, {
       from: defaultAccount
     })
   })
 
-  describe('#createRequest', () => {
-    context('without LINK', () => {
+  describe('updateOracleDetails', () => {
+    context('when called by a stranger', () => {
       it('reverts', async () => {
-        await h.assertActionThrows(async () => {
-          await cc.createRequestTo(
-            oc.address,
-            jobId,
-            payment,
-            url,
-            path,
-            times,
-            { from: consumer }
-          )
-        })
-      })
-    })
 
-    context('with LINK', () => {
-      let request
-
-      beforeEach(async () => {
-        await link.transfer(cc.address, web3.utils.toWei('1', 'ether'))
-      })
-
-      context('sending a request to a specific oracle contract address', () => {
-        it('triggers a log event in the new Oracle contract', async () => {
-          let tx = await cc.createRequestTo(
-            oc.address,
-            jobId,
-            payment,
-            url,
-            path,
-            times,
-            { from: consumer }
-          )
-          request = h.decodeRunRequest(tx.receipt.rawLogs[3])
-          assert.equal(oc.address, tx.receipt.rawLogs[3].address)
-          assert.equal(
-            request.topic,
-            web3.utils.keccak256(
-              'OracleRequest(bytes32,address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)'
-            )
-          )
-        })
-      })
-    })
-  })
-
-  describe('#fulfill', () => {
-    const expected = 50000
-    const response = web3.utils.toHex(expected)
-    let request
-
-    beforeEach(async () => {
-      await link.transfer(cc.address, web3.utils.toWei('1', 'ether'))
-      let tx = await cc.createRequestTo(
-        oc.address,
-        jobId,
-        payment,
-        url,
-        path,
-        times,
-        { from: consumer }
-      )
-      request = h.decodeRunRequest(tx.receipt.rawLogs[3])
-      await h.fulfillOracleRequest(oc, request, response, { from: oracleNode })
-    })
-
-    it('records the data given to it by the oracle', async () => {
-      const currentPrice = await cc.data.call()
-      assert.equal(
-        web3.utils.toHex(currentPrice),
-        web3.utils.padRight(expected, 64)
-      )
-    })
-
-    context('when my contract does not recognize the request ID', () => {
-      const otherId = web3.utils.toHex('otherId')
-
-      beforeEach(async () => {
-        request.id = otherId
-      })
-
-      it('does not accept the data provided', async () => {
-        await h.assertActionThrows(async () => {
-          await h.fulfillOracleRequest(oc, request, response, {
-            from: oracleNode
-          })
-        })
-      })
-    })
-
-    context('when called by anyone other than the oracle contract', () => {
-      it('does not accept the data provided', async () => {
-        await h.assertActionThrows(async () => {
-          await cc.fulfill(request.id, response, { from: stranger })
-        })
-      })
-    })
-  })
-
-  describe('#cancelRequest', () => {
-    let request
-
-    beforeEach(async () => {
-      await link.transfer(cc.address, web3.utils.toWei('1', 'ether'))
-      let tx = await cc.createRequestTo(
-        oc.address,
-        jobId,
-        payment,
-        url,
-        path,
-        times,
-        { from: consumer }
-      )
-      request = h.decodeRunRequest(tx.receipt.rawLogs[3])
-    })
-
-    context('before the expiration time', () => {
-      it('cannot cancel a request', async () => {
-        await h.assertActionThrows(async () => {
-          await cc.cancelRequest(
-            request.id,
-            request.payment,
-            request.callbackFunc,
-            request.expiration,
-            { from: consumer }
-          )
-        })
-      })
-    })
-
-    context('after the expiration time', () => {
-      beforeEach(async () => {
-        await h.increaseTime5Minutes()
-      })
-
-      context('when called by a non-owner', () => {
-        it('cannot cancel a request', async () => {
-          await h.assertActionThrows(async () => {
-            await cc.cancelRequest(
-              request.id,
-              request.payment,
-              request.callbackFunc,
-              request.expiration,
-              { from: stranger }
-            )
-          })
-        })
-      })
-
-      context('when called by an owner', () => {
-        it('can cancel a request', async () => {
-          await cc.cancelRequest(
-            request.id,
-            request.payment,
-            request.callbackFunc,
-            request.expiration,
-            { from: consumer }
-          )
-        })
-      })
-    })
-  })
-
-  describe('#withdrawLink', () => {
-    beforeEach(async () => {
-      await link.transfer(cc.address, web3.utils.toWei('1', 'ether'))
-    })
-
-    context('when called by a non-owner', () => {
-      it('cannot withdraw', async () => {
-        await h.assertActionThrows(async () => {
-          await cc.withdrawLink({ from: stranger })
-        })
       })
     })
 
     context('when called by the owner', () => {
-      it('transfers LINK to the owner', async () => {
-        const beforeBalance = await link.balanceOf(consumer)
-        assert.equal(beforeBalance, '0')
-        await cc.withdrawLink({ from: consumer })
-        const afterBalance = await link.balanceOf(consumer)
-        assert.equal(afterBalance, web3.utils.toWei('1', 'ether'))
+      it('should update the details', async () => {
+
+      })
+    })
+  })
+
+  describe('createOrder', () => {
+    context('with an invalid amount', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('with a valid amount', () => {
+      it('should create an order', async () => {
+
+      })
+    })
+
+    context('if the order already exists', () => {
+      it('reverts', async () => {
+        
+      })
+    })
+  })
+
+  describe('payForOrder', () => {
+    context('when the order doesnt exist', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when called by a non-buyer', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the deadline has passed', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the payment amount meets the order', () => {
+      it('should pay for the order and send the remaining to the buyer', async () => {
+
+      })
+    })
+
+    context('when the order has already been paid for', () => {
+      it('reverts', async () => {
+        
+      })
+    })
+  })
+
+  describe('cancelOrder', () => {
+    context('when called by a non-party', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the deadline has not been met', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the deadline has passed', () => {
+      it('should cancel the order', async () => {
+
+      })
+    })
+  })
+
+  describe('checkShippingStatus', () => {
+    context('when the contract is not funded with LINK', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the order does not exist', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the order has not been paid for', () => {
+      it('reverts', async () => {
+
+      })
+    })
+
+    context('when the order is valid and paid for', () => {
+      it('should create a Chainlink request', async () => {
+
+      })
+    })
+  })
+
+  describe('finalizeOrder', () => {
+    context('when the status is delivered', () => {
+      it('should pay the seller', async () => {
+
+      })
+    })
+
+    context('when the status is return_to_sender', () => {
+      it('should refund the buyer', async () => {
+
       })
     })
   })
