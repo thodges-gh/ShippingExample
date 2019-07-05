@@ -1,6 +1,7 @@
 'use strict'
 
 const h = require('chainlink-test-helpers')
+const { BN, constants, expectEvent, expectRevert } = require('openzeppelin-test-helpers')
 
 contract('ShippingContract', accounts => {
   const LinkToken = artifacts.require('LinkToken.sol')
@@ -39,15 +40,32 @@ contract('ShippingContract', accounts => {
   })
 
   describe('updateOracleDetails', () => {
+    const newJobId = web3.utils.toHex('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    const newPayment = web3.utils.toWei('2')
+  
     context('when called by a stranger', () => {
       it('reverts', async () => {
-
+        await expectRevert.unspecified(cc.updateOracleDetails(
+          oc.address,
+          ref.address,
+          newJobId,
+          newPayment,
+          {from: stranger}
+        ))
       })
     })
 
     context('when called by the owner', () => {
       it('should update the details', async () => {
-
+        await cc.updateOracleDetails(
+          oc.address,
+          ref.address,
+          newJobId,
+          newPayment,
+          {from: maintainer}
+        )
+        assert.equal(await cc.jobId(), newJobId)
+        assert.equal(await cc.payment(), newPayment)
       })
     })
   })
